@@ -1,0 +1,41 @@
+# BIDS output directories
+BIDS/
+output/
+
+# Conversion logs
+bids_conversion_*.log
+conversion_report_*.txt
+
+# dcm2niix temp files
+.dcm2niix_*
+
+# Source data (never commit patient data)
+sourcedata/
+rawdata/
+dicoms/
+DICOM/
+
+# NIfTI files (too large for git)
+*.nii
+*.nii.gz
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+
+# Test output
+tests/output/
+tests/tmp/
