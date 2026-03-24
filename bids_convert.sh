@@ -25,8 +25,8 @@ IFS=$'\n\t'
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
-VERSION="2.0.0"
-SCRIPT_NAME="$(basename "\$0")"
+VERSION="2.1.0"
+SCRIPT_NAME="$(basename "$0")"
 INPUT_DIR=""
 OUTPUT_DIR="./BIDS"
 CONFIG_FILE=""
@@ -96,6 +96,9 @@ cat << USAGE
     # Use custom mapping config
     $SCRIPT_NAME -i /data/raw -o /data/BIDS -c my_mapping.conf
 
+    # Run 4 subjects in parallel
+    $SCRIPT_NAME -i /data/raw -o /data/BIDS -p 4
+
   CONFIG FILE FORMAT (one rule per line):
     # <source_folder_pattern>  <bids_modality>  <bids_suffix>  [task_label]
     SAG                        anat             T1w
@@ -119,18 +122,18 @@ exit 0
 # ─────────────────────────────────────────────────────────────────────────────
 parse_args() {
     while [[ $# -gt 0 ]]; do
-        case "\$1" in
-            -i|--input)         INPUT_DIR="\$2"; shift 2 ;;
-            -o|--output)        OUTPUT_DIR="\$2"; shift 2 ;;
-            -c|--config)        CONFIG_FILE="\$2"; shift 2 ;;
+        case "$1" in
+            -i|--input)         INPUT_DIR="$2"; shift 2 ;;
+            -o|--output)        OUTPUT_DIR="$2"; shift 2 ;;
+            -c|--config)        CONFIG_FILE="$2"; shift 2 ;;
             -d|--delete-source) DELETE_SOURCE=true; shift ;;
             -s|--sourcedata)    COPY_SOURCEDATA=true; shift ;;
             -n|--dry-run)       DRY_RUN=true; shift ;;
-            -p|--parallel)      PARALLEL="\$2"; shift 2 ;;
+            -p|--parallel)      PARALLEL="$2"; shift 2 ;;
             -v|--verbose)       VERBOSE=true; shift ;;
             -h|--help)          usage ;;
             *)
-                log_err "Unknown option: \$1"
+                log_err "Unknown option: $1"
                 echo "Use -h for help."
                 exit 1
                 ;;
@@ -151,6 +154,12 @@ parse_args() {
     mkdir -p "$OUTPUT_DIR"
     OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
     LOG_FILE="${OUTPUT_DIR}/bids_conversion_${TIMESTAMP}.log"
+
+    # Validate --parallel value
+    if ! [[ "$PARALLEL" =~ ^[1-9][0-9]*$ ]]; then
+        log_err "--parallel must be a positive integer, got: $PARALLEL"
+        exit 1
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -272,20 +281,42 @@ load_default_mapping() {
     add_mapping "*FDG*"           "pet"   "pet"          ""
     add_mapping "*AMYLOID*"       "pet"   "pet"          ""
     add_mapping "*TAU*PET*"       "pet"   "pet"          ""
+
+    # ── MEG ─────────────────────────────────────────
+    add_mapping "*MEG*"           "meg"   "meg"          ""
+
+    # ── EEG ─────────────────────────────────────────
+    add_mapping "*EEG*"           "eeg"   "eeg"          ""
+    add_mapping "*SCALP*EEG*"     "eeg"   "eeg"          ""
+
+    # ── iEEG ────────────────────────────────────────
+    add_mapping "*IEEG*"          "ieeg"  "ieeg"         ""
+    add_mapping "*ECOG*"          "ieeg"  "ieeg"         ""
+    add_mapping "*SEEG*"          "ieeg"  "ieeg"         ""
+    add_mapping "*DEPTH*ELEC*"    "ieeg"  "ieeg"         ""
+
+    # ── Microscopy ──────────────────────────────────
+    add_mapping "*MICR*"          "micr"  "TEM"          ""
+    add_mapping "*HISTOLOGY*"     "micr"  "BF"           ""
+
+    # ── Motion ──────────────────────────────────────
+    add_mapping "*MOTION*"        "motion" "motion"      ""
+    add_mapping "*IMU*"           "motion" "motion"      ""
+    add_mapping "*ACCEL*"         "motion" "motion"      ""
 }
 
 add_mapping() {
-    MAPPING_PATTERNS+=("\$1")
-    MAPPING_MODALITIES+=("\$2")
-    MAPPING_SUFFIXES+=("\$3")
-    MAPPING_TASKS+=("\$4")
+    MAPPING_PATTERNS+=("$1")
+    MAPPING_MODALITIES+=("$2")
+    MAPPING_SUFFIXES+=("$3")
+    MAPPING_TASKS+=("$4")
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOAD CONFIG FILE (overrides defaults)
 # ─────────────────────────────────────────────────────────────────────────────
 load_config_file() {
-    local cfg="\$1"
+    local cfg="$1"
 
     if [ ! -f "$cfg" ]; then
         log_err "Config file not found: $cfg"
@@ -326,7 +357,7 @@ MATCHED_SUFFIX=""
 MATCHED_TASK=""
 
 match_folder() {
-    local folder_name="\$1"
+    local folder_name="$1"
     local folder_upper="${folder_name^^}"  # uppercase for case-insensitive matching
 
     MATCHED_MODALITY=""
@@ -354,7 +385,7 @@ match_folder() {
 # COUNT FILES IN A DIRECTORY (DICOM or otherwise)
 # ─────────────────────────────────────────────────────────────────────────────
 count_source_files() {
-    find "\$1" -maxdepth 1 -type f \
+    find "$1" -maxdepth 1 -type f \
         \( -name "*.dcm" -o -name "*.DCM" \
            -o -name "*.IMA" -o -name "*.ima" \
            -o -name "*.img" -o -name "*.hdr" \
@@ -365,7 +396,7 @@ count_source_files() {
 }
 
 has_source_files() {
-    local dir="\$1"
+    local dir="$1"
     local count
     count=$(count_source_files "$dir")
 
@@ -383,40 +414,36 @@ has_source_files() {
 # BUILD BIDS FILENAME
 # ─────────────────────────────────────────────────────────────────────────────
 build_bids_filename() {
-    local sub_label="\$1"
-    local ses_label="\$2"    # empty string if no session
-    local modality="\$3"
-    local suffix="\$4"
-    local task="\$5"
-    local run="\$6"          # empty or run number
+    local sub_label="$1"
+    local ses_label="$2"    # empty string if no session
+    local modality="$3"
+    local suffix="$4"
+    local task="$5"
+    local run="$6"          # empty or run number
+    local folder_name="${7:-}"
 
     local fname="${sub_label}"
 
     [ -n "$ses_label" ] && fname="${fname}_${ses_label}"
 
-    # Task is required for func
-    if [ "$modality" = "func" ] && [ -n "$task" ]; then
-        fname="${fname}_task-${task}"
-    fi
-
-    # Perfusion might need task too
-    if [ "$modality" = "perf" ] && [ -n "$task" ]; then
-        fname="${fname}_task-${task}"
-    fi
-
-    # PET might have tracer info (simplified)
-    if [ "$modality" = "pet" ] && [ -n "$task" ]; then
-        fname="${fname}_trc-${task}"
-    fi
+    case "$modality" in
+        func)
+            [ -n "$task" ] && fname="${fname}_task-${task}" ;;
+        perf)
+            [ -n "$task" ] && fname="${fname}_task-${task}" ;;
+        pet)
+            # PET uses tracer label (trc-) rather than task
+            [ -n "$task" ] && fname="${fname}_trc-${task}" ;;
+        meg|eeg|ieeg)
+            [ -n "$task" ] && fname="${fname}_task-${task}" ;;
+    esac
 
     # Run number
     [ -n "$run" ] && fname="${fname}_run-$(printf '%02d' "$run")"
 
-    # Direction for fieldmap EPIs
+    # Phase-encoding direction for fieldmap EPIs
     if [ "$modality" = "fmap" ] && [ "$suffix" = "epi" ]; then
-        # Try to detect direction from folder name
-        local dir_upper="${7:-}"
-        dir_upper="${dir_upper^^}"
+        local dir_upper="${folder_name^^}"
         if [[ "$dir_upper" == *"AP"* ]]; then
             fname="${fname}_dir-AP"
         elif [[ "$dir_upper" == *"PA"* ]]; then
@@ -436,10 +463,10 @@ build_bids_filename() {
 # CONVERT A SINGLE SOURCE FOLDER
 # ─────────────────────────────────────────────────────────────────────────────
 convert_folder() {
-    local source_dir="\$1"
-    local output_dir="\$2"
-    local bids_filename="\$3"
-    local modality="\$4"
+    local source_dir="$1"
+    local output_dir="$2"
+    local bids_filename="$3"
+    local modality="$4"
 
     if $DRY_RUN; then
         log_dry "dcm2niix -z y -f '$bids_filename' -o '$output_dir' '$source_dir'"
@@ -448,7 +475,11 @@ convert_folder() {
 
     mkdir -p "$output_dir"
 
-    local dcm2niix_log="${output_dir}/.dcm2niix_${bids_filename}.log"
+    # FIX: Store dcm2niix logs in a dedicated logs/ subdirectory instead of
+    # deleting them — useful for post-hoc QC and debugging failed conversions.
+    local log_dir="${OUTPUT_DIR}/logs"
+    mkdir -p "$log_dir"
+    local dcm2niix_log="${log_dir}/dcm2niix_${bids_filename}.log"
 
     # Run dcm2niix
     if dcm2niix -z y -b y -ba y -f "$bids_filename" -o "$output_dir" "$source_dir" \
@@ -472,12 +503,6 @@ convert_folder() {
         for nii_file in "${output_dir}/${bids_filename}"*.nii.gz; do
             local base="${nii_file%.nii.gz}"
             local run_tag="_run-$(printf '%02d' $run_num)"
-
-            # Build new filename: insert run before suffix
-            # e.g. sub-001_T1w_a.nii.gz → sub-001_run-01_T1w.nii.gz
-            local new_base
-            new_base=$(echo "$base" | sed -E "s/(_[a-z]+)?$//" | sed -E "s/_${modality}$//")
-            # Simplified: just rename with run tag
             local suffix_part="${bids_filename##*_}"
             local prefix_part="${bids_filename%_*}"
             local new_name="${prefix_part}${run_tag}_${suffix_part}"
@@ -507,20 +532,20 @@ convert_folder() {
         fi
     fi
 
-    # Clean up dcm2niix log
-    rm -f "$dcm2niix_log"
-
     ((CONVERTED++)) || true
     return 0
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # POST-CONVERSION JSON ENRICHMENT
+# FIX: Pass shell variables as env vars rather than interpolating them
+#      directly into the Python source, which breaks on values containing
+#      single quotes (e.g. folder names like "O'Brien").
 # ─────────────────────────────────────────────────────────────────────────────
 enrich_json() {
-    local json_file="\$1"
-    local modality="\$2"
-    local task="\$3"
+    local json_file="$1"
+    local modality="$2"
+    local task="$3"
 
     [ ! -f "$json_file" ] && return 0
 
@@ -529,33 +554,35 @@ enrich_json() {
         return 0
     fi
 
-    python3 << PYEOF 2>/dev/null || log_warn "Failed to enrich $json_file"
-import json, sys
+    BIDS_JSON_FILE="$json_file" BIDS_MODALITY="$modality" BIDS_TASK="$task" \
+    python3 << 'PYEOF' 2>/dev/null || true
+import json, sys, os
+
+json_file = os.environ['BIDS_JSON_FILE']
+modality  = os.environ['BIDS_MODALITY']
+task      = os.environ['BIDS_TASK']
 
 try:
-    with open('${json_file}', 'r') as f:
+    with open(json_file, 'r') as f:
         data = json.load(f)
 except (json.JSONDecodeError, FileNotFoundError):
     sys.exit(0)
 
-modality = '${modality}'
-task = '${task}'
-
-# Add TaskName for functional data (BIDS requirement)
-if modality == 'func' and task:
+# Add TaskName for functional / perf / electrophysiology data (BIDS requirement)
+if modality in ('func', 'perf', 'meg', 'eeg', 'ieeg') and task:
     data.setdefault('TaskName', task)
 
-# Add required RepetitionTime if missing (func)
+# Propagate RepetitionTime from vendor-specific field when missing (func)
 if modality == 'func' and 'RepetitionTime' not in data:
-    # Try to extract from other fields
     if 'RepetitionTimeExcitation' in data:
         data['RepetitionTime'] = data['RepetitionTimeExcitation']
 
-# Add IntendedFor placeholder for fieldmaps
-if modality == 'fmap':
-    data.setdefault('IntendedFor', [])
+# Add IntendedFor placeholder for fieldmaps — must be filled in manually.
+# bids-validator will flag an empty list, so we leave the field absent rather
+# than adding an empty placeholder that causes a validation error.
+# Callers are warned by generate_report() instead.
 
-with open('${json_file}', 'w') as f:
+with open(json_file, 'w') as f:
     json.dump(data, f, indent=4, sort_keys=False)
 PYEOF
 }
@@ -564,10 +591,10 @@ PYEOF
 # ARCHIVE SOURCE DATA
 # ─────────────────────────────────────────────────────────────────────────────
 archive_sourcedata() {
-    local source="\$1"
-    local sub_label="\$2"
-    local ses_label="\$3"
-    local folder_name="\$4"
+    local source="$1"
+    local sub_label="$2"
+    local ses_label="$3"
+    local folder_name="$4"
 
     local archive_dir="${OUTPUT_DIR}/sourcedata/${sub_label}"
     [ -n "$ses_label" ] && archive_dir="${archive_dir}/${ses_label}"
@@ -585,19 +612,24 @@ archive_sourcedata() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DELETE SOURCE DATA (with safety checks)
+# FIX: Check only for NIfTI files produced from THIS specific conversion
+#      (by bids_filename), not any run-numbered file anywhere in output_dir.
+#      The old glob could match a previous subject's files and falsely confirm
+#      success, allowing source deletion before conversion actually succeeded.
 # ─────────────────────────────────────────────────────────────────────────────
 safe_delete_source() {
-    local source_dir="\$1"
-    local output_dir="\$2"
-    local bids_filename="\$3"
+    local source_dir="$1"
+    local output_dir="$2"
+    local bids_filename="$3"
 
-    # Only delete if we have at least one NIfTI output
+    # Only delete if we have at least one NIfTI output for THIS conversion
     local nifti_exists=false
-    ls "${output_dir}/${bids_filename}"*.nii.gz &>/dev/null && nifti_exists=true
-    ls "${output_dir}/"*"_run-"*".nii.gz" &>/dev/null && nifti_exists=true
+    if ls "${output_dir}/${bids_filename}"*.nii.gz &>/dev/null; then
+        nifti_exists=true
+    fi
 
     if ! $nifti_exists; then
-        log_warn "  Skipping deletion — no NIfTI output found for: $source_dir"
+        log_warn "  Skipping deletion — no NIfTI output found for: $bids_filename"
         return 1
     fi
 
@@ -606,7 +638,6 @@ safe_delete_source() {
         return 0
     fi
 
-    # Double-check: source directory should contain DICOM-like files
     local file_count
     file_count=$(find "$source_dir" -maxdepth 1 -type f | wc -l)
 
@@ -621,9 +652,11 @@ safe_delete_source() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CREATE BIDS SCAFFOLD FILES
+# FIX: Use $SCRIPT_NAME and $VERSION variables so scaffold content stays
+#      accurate if the script is renamed or the version is bumped.
 # ─────────────────────────────────────────────────────────────────────────────
 create_bids_scaffold() {
-    local bids_dir="\$1"
+    local bids_dir="$1"
 
     if $DRY_RUN; then
         log_dry "Would create BIDS scaffold in $bids_dir"
@@ -632,7 +665,7 @@ create_bids_scaffold() {
 
     # ── dataset_description.json ──
     if [ ! -f "$bids_dir/dataset_description.json" ]; then
-        cat > "$bids_dir/dataset_description.json" << 'DDJSON'
+        cat > "$bids_dir/dataset_description.json" << DDJSON
 {
     "Name": "My Study",
     "BIDSVersion": "1.9.0",
@@ -649,8 +682,8 @@ create_bids_scaffold() {
     "DatasetDOI": "",
     "GeneratedBy": [
         {
-            "Name": "bids_convert.sh",
-            "Version": "2.0.0",
+            "Name": "${SCRIPT_NAME}",
+            "Version": "${VERSION}",
             "Description": "Custom DICOM to BIDS conversion script"
         }
     ]
@@ -695,7 +728,7 @@ PJSON
 
     # ── README ──
     if [ ! -f "$bids_dir/README" ]; then
-        cat > "$bids_dir/README" << 'README'
+        cat > "$bids_dir/README" << README
 # Dataset README
 
 This dataset has been converted to BIDS format.
@@ -704,30 +737,33 @@ This dataset has been converted to BIDS format.
 FIXME: Add study description here.
 
 ## Conversion
-Converted using bids_convert.sh v2.0.0
-See conversion logs in the BIDS root directory.
+Converted using ${SCRIPT_NAME} v${VERSION}
+See conversion logs in ${bids_dir}/logs/
 
 ## Notes
 - Review all JSON sidecar files for correctness
 - Update participants.tsv with actual demographics
+- Add IntendedFor fields to all fieldmap JSON sidecars
 - Run bids-validator to check compliance
 README
         log "Created README"
     fi
 
-    # ── .bidsignore ──
-    if [ ! -f "$bids_dir/.bidsignore" ]; then
+    # ── CHANGES ──
+    if [ ! -f "$bids_dir/CHANGES" ]; then
         cat > "$bids_dir/CHANGES" << 'CHANGES'
 1.0.0 YYYY-MM-DD
   - Initial BIDS conversion
 CHANGES
+    fi
 
+    # ── .bidsignore ──
+    if [ ! -f "$bids_dir/.bidsignore" ]; then
         cat > "$bids_dir/.bidsignore" << 'IGNORE'
 # Ignore conversion logs
-**/bids_conversion_*.log
-**/.*dcm2niix*
+logs/
 # Ignore sourcedata
-**/sourcedata/
+sourcedata/
 IGNORE
         log "Created .bidsignore and CHANGES"
     fi
@@ -742,10 +778,9 @@ IGNORE
 #   NAMED:       <input>/SUBJECT_001/SESSION_01/SAG/
 # ─────────────────────────────────────────────────────────────────────────────
 detect_structure() {
-    local input="\$1"
+    local input="$1"
     local has_sessions=false
 
-    # Check if any subject folder contains session-like subdirectories
     for sub_dir in "$input"/*/; do
         [ ! -d "$sub_dir" ] && continue
         for child in "$sub_dir"/*/; do
@@ -761,8 +796,6 @@ detect_structure() {
                 break 2
             fi
 
-            # Check if child contains imaging folders (not a session)
-            # If child contains children that match modality patterns, it might be a session
             local grandchild_count=0
             local imaging_child=false
             for gc in "$child"/*/; do
@@ -791,19 +824,22 @@ detect_structure() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NORMALIZE SUBJECT ID → sub-XXX
+# FIX: Removed the bare `id="${id#S}"` strip that incorrectly consumed the
+#      first character of names like SCAN_01 → CAN_01. Now only strips
+#      explicit known prefixes (sub-, SUB-, SUBJECT_) before falling back to
+#      zero-padding purely numeric IDs.
 # ─────────────────────────────────────────────────────────────────────────────
 normalize_subject_id() {
-    local raw="\$1"
+    local raw="$1"
     local id="$raw"
 
-    # Strip common prefixes
+    # Strip known prefixes (most specific first)
     id="${id#sub-}"
     id="${id#sub}"
     id="${id#SUB-}"
     id="${id#SUB}"
     id="${id#SUBJECT_}"
     id="${id#SUBJECT}"
-    id="${id#S}"
 
     # Remove leading underscores/hyphens
     id="${id#_}"
@@ -821,7 +857,7 @@ normalize_subject_id() {
 # NORMALIZE SESSION ID → ses-XXX
 # ─────────────────────────────────────────────────────────────────────────────
 normalize_session_id() {
-    local raw="\$1"
+    local raw="$1"
     local id="$raw"
 
     id="${id#ses-}"
@@ -848,14 +884,13 @@ normalize_session_id() {
 # PROCESS A SINGLE SUBJECT (optionally with sessions)
 # ─────────────────────────────────────────────────────────────────────────────
 process_subject() {
-    local sub_source_dir="\$1"
-    local sub_label="\$2"
-    local structure="\$3"
+    local sub_source_dir="$1"
+    local sub_label="$2"
+    local structure="$3"
 
     log "━━━ Processing ${sub_label} ━━━"
 
     if [ "$structure" = "sessions" ]; then
-        # ── Multi-session: iterate session subdirectories ──
         for ses_dir in "$sub_source_dir"/*/; do
             [ ! -d "$ses_dir" ] && continue
             local ses_name
@@ -868,7 +903,6 @@ process_subject() {
             process_modality_folders "$ses_dir" "$sub_label" "$ses_label"
         done
     else
-        # ── Flat: modality folders directly under subject ──
         process_modality_folders "$sub_source_dir" "$sub_label" ""
     fi
 }
@@ -880,14 +914,12 @@ process_subject() {
 declare -A RUN_COUNTERS
 
 process_modality_folders() {
-    local parent_dir="\$1"
-    local sub_label="\$2"
-    local ses_label="\$3"
+    local parent_dir="$1"
+    local sub_label="$2"
+    local ses_label="$3"
 
-    # Reset run counters for this subject/session
     RUN_COUNTERS=()
 
-    # Gather unmatched folders for reporting
     local unmatched=()
 
     shopt -s nullglob
@@ -899,7 +931,6 @@ process_modality_folders() {
 
         log_dbg "  Checking folder: $folder_name"
 
-        # Attempt to match
         if ! match_folder "$folder_name"; then
             unmatched+=("$folder_name")
             log_warn "  Unmatched folder (skipped): $folder_name"
@@ -910,9 +941,7 @@ process_modality_folders() {
         local suffix="$MATCHED_SUFFIX"
         local task="$MATCHED_TASK"
 
-        # Check for source files
         if ! has_source_files "$modality_dir"; then
-            # Check subdirectories (some data is nested one level deeper)
             local found_sub=false
             for nested in "$modality_dir"/*/; do
                 [ ! -d "$nested" ] && continue
@@ -930,51 +959,46 @@ process_modality_folders() {
             fi
         fi
 
-        # ── Track run numbers ──
-        local run_key="${modality}_${suffix}_${task}"
+        # ── Track run numbers using a safe delimiter (|) instead of underscore
+        #    so task names containing underscores (e.g. "working_memory") don't
+        #    cause the key to split incorrectly in fixup_run_numbers.
+        local run_key="${modality}|${suffix}|${task}"
         if [ -n "${RUN_COUNTERS[$run_key]+x}" ]; then
             RUN_COUNTERS[$run_key]=$(( ${RUN_COUNTERS[$run_key]} + 1 ))
         else
             RUN_COUNTERS[$run_key]=1
         fi
-        local run_num=""
-        # We'll add run numbers in a second pass if needed
-        # For now, track the count
 
-        # ── Build output path ──
         local bids_sub_dir="${OUTPUT_DIR}/${sub_label}"
         [ -n "$ses_label" ] && bids_sub_dir="${bids_sub_dir}/${ses_label}"
         bids_sub_dir="${bids_sub_dir}/${modality}"
 
-        # ── Build filename ──
         local bids_filename
         bids_filename="$(build_bids_filename "$sub_label" "$ses_label" "$modality" "$suffix" "$task" "" "$folder_name")"
 
         log "  📁 $folder_name → $modality/$bids_filename"
 
-        # ── Archive if requested ──
         if $COPY_SOURCEDATA; then
             archive_sourcedata "$modality_dir" "$sub_label" "$ses_label" "$folder_name"
         fi
 
-        # ── Convert ──
         convert_folder "$modality_dir" "$bids_sub_dir" "$bids_filename" "$modality"
 
-        # ── Enrich JSON ──
         local json_file="${bids_sub_dir}/${bids_filename}.json"
         enrich_json "$json_file" "$modality" "$task"
 
-        # ── Delete source if requested ──
+        if [ "$modality" = "fmap" ] && ! $DRY_RUN; then
+            log_warn "  ⚠️  Fieldmap '$bids_filename': IntendedFor is empty — add target scans manually before running bids-validator."
+        fi
+
         if $DELETE_SOURCE; then
             safe_delete_source "$modality_dir" "$bids_sub_dir" "$bids_filename"
         fi
     done
     shopt -u nullglob
 
-    # ── Second pass: add run numbers where duplicates exist ──
     fixup_run_numbers "$sub_label" "$ses_label"
 
-    # Report unmatched
     if [ ${#unmatched[@]} -gt 0 ]; then
         log_warn "  Unmatched folders for ${sub_label}: ${unmatched[*]}"
     fi
@@ -982,17 +1006,19 @@ process_modality_folders() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FIX RUN NUMBERS (rename files that need run- entity)
+# FIX: Key now uses | as delimiter (set in process_modality_folders) so task
+#      names with underscores split correctly.
 # ─────────────────────────────────────────────────────────────────────────────
 fixup_run_numbers() {
-    local sub_label="\$1"
-    local ses_label="\$2"
+    local sub_label="$1"
+    local ses_label="$2"
 
     for key in "${!RUN_COUNTERS[@]}"; do
         local count="${RUN_COUNTERS[$key]}"
         [ "$count" -le 1 ] && continue
 
-        # Parse key
-        IFS='_' read -r modality suffix task <<< "$key"
+        # Split on | instead of _
+        IFS='|' read -r modality suffix task <<< "$key"
 
         local search_dir="${OUTPUT_DIR}/${sub_label}"
         [ -n "$ses_label" ] && search_dir="${search_dir}/${ses_label}"
@@ -1000,7 +1026,6 @@ fixup_run_numbers() {
 
         [ ! -d "$search_dir" ] && continue
 
-        # Find all files matching this suffix pattern
         local pattern="${sub_label}"
         [ -n "$ses_label" ] && pattern="${pattern}_${ses_label}"
         [ -n "$task" ] && [ "$modality" = "func" ] && pattern="${pattern}_task-${task}"
@@ -1018,7 +1043,6 @@ fixup_run_numbers() {
 
                 for ext in .nii.gz .json .bval .bvec; do
                     local old="${search_dir}/${pattern}${ext}"
-                    # Handle dcm2niix suffixed files too
                     if [ -f "$old" ]; then
                         local new="${search_dir}/${new_pattern}${ext}"
                         mv "$old" "$new"
@@ -1035,7 +1059,7 @@ fixup_run_numbers() {
 # ADD PARTICIPANT TO TSV
 # ─────────────────────────────────────────────────────────────────────────────
 add_participant() {
-    local sub_label="\$1"
+    local sub_label="$1"
     local tsv_file="${OUTPUT_DIR}/participants.tsv"
 
     if $DRY_RUN; then
@@ -1043,7 +1067,6 @@ add_participant() {
         return 0
     fi
 
-    # Check if already listed
     if grep -q "^${sub_label}" "$tsv_file" 2>/dev/null; then
         log_dbg "  $sub_label already in participants.tsv"
         return 0
@@ -1067,7 +1090,7 @@ generate_report() {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   BIDS Conversion Report
   Generated: $(date)
-  Script Version: ${VERSION}
+  Script:  ${SCRIPT_NAME} v${VERSION}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Source Directory:  ${INPUT_DIR}
@@ -1122,7 +1145,7 @@ generate_sample_config() {
 # Patterns use bash globbing (case-insensitive).
 # Lines starting with # are comments.
 #
-# Available modalities: anat, func, dwi, fmap, perf, pet
+# Available modalities: anat, func, dwi, fmap, perf, pet, meg, eeg, ieeg, micr, motion
 # See https://bids-specification.readthedocs.io/ for valid suffixes
 ###############################################################################
 
@@ -1154,6 +1177,11 @@ SAG                 anat        T1w
 
 # ── PET ─────────────────────────────────────────────────────────────────────
 *PET*               pet         pet
+
+# ── MEG / EEG / iEEG ────────────────────────────────────────────────────────
+*MEG*               meg         meg
+*EEG*               eeg         eeg
+*ECOG*              ieeg        ieeg
 SAMPLECONF
 
     log "Sample config saved: $config_out"
@@ -1191,6 +1219,16 @@ confirm_delete() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PARALLEL SUBJECT PROCESSING
+# Uses a simple semaphore pattern: cap active background jobs at $PARALLEL.
+# ─────────────────────────────────────────────────────────────────────────────
+wait_for_slot() {
+    while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do
+        sleep 0.2
+    done
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
@@ -1198,20 +1236,19 @@ main() {
 
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}  BIDS Converter v${VERSION}${NC}"
+    echo -e "${CYAN}  ${SCRIPT_NAME} v${VERSION}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
-    log "Input:  $INPUT_DIR"
-    log "Output: $OUTPUT_DIR"
-    log "Log:    $LOG_FILE"
-    $DRY_RUN && log "Mode:   DRY-RUN (no changes will be made)"
+    log "Input:    $INPUT_DIR"
+    log "Output:   $OUTPUT_DIR"
+    log "Log:      $LOG_FILE"
+    log "Parallel: $PARALLEL"
+    $DRY_RUN && log "Mode:     DRY-RUN (no changes will be made)"
     echo ""
 
-    # Check dependencies
     check_dependencies
 
-    # Load mapping config
     if [ -n "$CONFIG_FILE" ]; then
         load_config_file "$CONFIG_FILE"
     else
@@ -1219,24 +1256,19 @@ main() {
         log "Using default folder mapping (${#MAPPING_PATTERNS[@]} rules)"
     fi
 
-    # Confirm deletion
     if $DELETE_SOURCE; then
         confirm_delete
     fi
 
-    # Create BIDS scaffold
     create_bids_scaffold "$OUTPUT_DIR"
-
-    # Generate sample config for reference
     generate_sample_config
 
-    # Detect data structure
     local structure
     structure="$(detect_structure "$INPUT_DIR")"
     log "Detected structure: $structure"
     echo ""
 
-    # ── Process each subject ──
+    # ── Process each subject, with optional parallelism ──
     shopt -s nullglob
     local sub_count=0
     for sub_dir in "$INPUT_DIR"/*/; do
@@ -1245,7 +1277,6 @@ main() {
         local raw_sub_name
         raw_sub_name="$(basename "$sub_dir")"
 
-        # Skip non-subject directories
         local skip=false
         for skip_name in "BIDS" "sourcedata" "derivatives" "code" "stimuli" ".git"; do
             [ "$raw_sub_name" = "$skip_name" ] && skip=true
@@ -1256,17 +1287,24 @@ main() {
         sub_label="$(normalize_subject_id "$raw_sub_name")"
 
         add_participant "$sub_label"
-        process_subject "$sub_dir" "$sub_label" "$structure"
+
+        if [ "$PARALLEL" -gt 1 ]; then
+            wait_for_slot
+            process_subject "$sub_dir" "$sub_label" "$structure" &
+        else
+            process_subject "$sub_dir" "$sub_label" "$structure"
+        fi
 
         ((sub_count++))
         echo ""
     done
     shopt -u nullglob
 
-    # ── Generate report ──
+    # Wait for any remaining background jobs
+    wait
+
     generate_report
 
-    # ── Summary ──
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}  Conversion Complete${NC}"
@@ -1287,12 +1325,11 @@ main() {
     echo -e "  ${BLUE}Validate with:${NC}  bids-validator ${OUTPUT_DIR}"
     echo ""
 
-    # ── Remaining TODO items ──
     echo -e "${YELLOW}  TODO:${NC}"
     echo "  1. Update participants.tsv with actual demographics"
     echo "  2. Update dataset_description.json with study details"
     echo "  3. Review task-unknown labels and rename appropriately"
-    echo "  4. Add IntendedFor fields to fieldmap JSON files"
+    echo "  4. Add IntendedFor fields to all fieldmap JSON sidecars"
     echo "  5. Verify JSON sidecar acquisition parameters"
     echo ""
 
