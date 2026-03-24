@@ -12,7 +12,7 @@ Open an issue using the **Bug Report** template and include:
 - `dcm2niix` version (`dcm2niix --version`)
 - The command you ran
 - Expected vs. actual behavior
-- Relevant log output (from the `.log` file generated in the BIDS output directory)
+- Relevant log output (from `logs/` in your BIDS output directory)
 
 ### Suggesting Features
 
@@ -48,6 +48,9 @@ add_mapping "*PATTERN*" "modality" "suffix" "task_or_empty"
 ```
 
 Place more specific patterns before more general ones — the first match wins.
+
+If the new modality requires a `task-` label in the BIDS filename, add a corresponding
+`case` entry in `build_bids_filename()`.
 
 ### Testing
 

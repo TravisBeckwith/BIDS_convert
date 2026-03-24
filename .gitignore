@@ -2,12 +2,13 @@
 BIDS/
 output/
 
-# Conversion logs
+# Conversion logs and reports (now written to logs/ inside the output dir)
+logs/
 bids_conversion_*.log
 conversion_report_*.txt
 
-# dcm2niix temp files
-.dcm2niix_*
+# dcm2niix per-conversion logs (written to logs/ as dcm2niix_*.log)
+dcm2niix_*.log
 
 # Source data (never commit patient data)
 sourcedata/

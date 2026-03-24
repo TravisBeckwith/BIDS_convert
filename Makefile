@@ -1,4 +1,4 @@
-.PHONY: help lint test install
+.PHONY: help lint test install uninstall clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -16,3 +16,6 @@ install: ## Install to /usr/local/bin (requires sudo)
 
 uninstall: ## Remove from /usr/local/bin (requires sudo)
 	rm -f /usr/local/bin/bids_convert
+
+clean: ## Remove test output and temporary files
+	rm -rf tests/output/ tests/tmp/
