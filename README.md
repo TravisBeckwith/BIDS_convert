@@ -1,4 +1,5 @@
-# bids-convert [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20088220.svg)](https://doi.org/10.5281/zenodo.20088220)
+# bids-convert 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20088220.svg)](https://doi.org/10.5281/zenodo.20088220)
 
 A robust, multi-modal Bash script for converting DICOM datasets into [BIDS](https://bids-specification.readthedocs.io/) (Brain Imaging Data Structure) format using `dcm2niix`.
 
