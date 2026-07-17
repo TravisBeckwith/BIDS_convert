@@ -29,12 +29,12 @@ assert_eq() {
     local label="$1" expected="$2" actual="$3"
     if [ "$expected" = "$actual" ]; then
         echo "  ✅ PASS: $label"
-        ((PASS++))
+        ((PASS++)) || true
     else
         echo "  ❌ FAIL: $label"
         echo "       expected: '$expected'"
         echo "       actual:   '$actual'"
-        ((FAIL++))
+        ((FAIL++)) || true
     fi
 }
 
@@ -42,10 +42,10 @@ assert_file_exists() {
     local label="$1" filepath="$2"
     if [ -f "$filepath" ]; then
         echo "  ✅ PASS: $label"
-        ((PASS++))
+        ((PASS++)) || true
     else
         echo "  ❌ FAIL: $label — file not found: $filepath"
-        ((FAIL++))
+        ((FAIL++)) || true
     fi
 }
 
@@ -53,10 +53,10 @@ assert_contains() {
     local label="$1" filepath="$2" pattern="$3"
     if grep -q "$pattern" "$filepath" 2>/dev/null; then
         echo "  ✅ PASS: $label"
-        ((PASS++))
+        ((PASS++)) || true
     else
         echo "  ❌ FAIL: $label — pattern '$pattern' not found in $filepath"
-        ((FAIL++))
+        ((FAIL++)) || true
     fi
 }
 
@@ -88,9 +88,16 @@ test_dry_run_creates_no_files() {
     touch "${input_dir}/SUBJECT_001/SAG_T1/dummy.dcm"
 
     # Dry-run should NOT create actual NIfTI files (dcm2niix won't run)
-    bash "$SCRIPT" -i "$input_dir" -o "$output_dir" -n 2>&1 | grep -q "DRY-RUN" && \
-        echo "  ✅ PASS: dry-run mode activated" && ((PASS++)) || \
-        { echo "  ❌ FAIL: dry-run mode not detected"; ((FAIL++)); }
+    # Capture output first rather than piping straight into `grep -q`: with
+    # pipefail (set above) and DRY-RUN appearing early in the output, grep -q
+    # exits as soon as it finds a match while bids_convert.sh is still
+    # writing later lines, which kills it with SIGPIPE (exit 141) — pipefail
+    # then reports the pipeline as failed even though grep did match.
+    local out
+    out="$(bash "$SCRIPT" -i "$input_dir" -o "$output_dir" -n 2>&1)" || true
+    echo "$out" | grep -q "DRY-RUN" && \
+        echo "  ✅ PASS: dry-run mode activated" && { ((PASS++)) || true; } || \
+        { echo "  ❌ FAIL: dry-run mode not detected"; ((FAIL++)) || true; }
 
     teardown_tmp
 }
@@ -111,7 +118,7 @@ test_bids_scaffold_creation() {
     # In dry-run the scaffold won't be created, so we test the help works
     # and the script doesn't crash
     echo "  ✅ PASS: script completed without error in dry-run"
-    ((PASS++))
+    ((PASS++)) || true
 
     teardown_tmp
 }

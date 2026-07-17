@@ -515,7 +515,7 @@ convert_folder() {
                     log_dbg "  Renamed: $(basename "$old_file") → $(basename "$new_file")"
                 fi
             done
-            ((run_num++))
+            ((run_num++)) || true
         done
     fi
 
@@ -800,7 +800,7 @@ detect_structure() {
             local imaging_child=false
             for gc in "$child"/*/; do
                 [ ! -d "$gc" ] && continue
-                ((grandchild_count++))
+                ((grandchild_count++)) || true
                 local gc_name
                 gc_name="$(basename "$gc")"
                 if match_folder "$gc_name" 2>/dev/null; then
@@ -833,13 +833,19 @@ normalize_subject_id() {
     local raw="$1"
     local id="$raw"
 
-    # Strip known prefixes (most specific first)
-    id="${id#sub-}"
-    id="${id#sub}"
-    id="${id#SUB-}"
-    id="${id#SUB}"
+    # Strip known prefixes — longest/most-specific first. Order matters:
+    # each ${id#pattern} only strips once, against whatever id currently is,
+    # so a short prefix tried before a longer one that contains it (e.g.
+    # "SUB" before "SUBJECT_") will consume part of the longer prefix and
+    # leave the rest stuck to the id (SUBJECT_001 -> SUB stripped -> JECT_001).
     id="${id#SUBJECT_}"
     id="${id#SUBJECT}"
+    id="${id#subject_}"
+    id="${id#subject}"
+    id="${id#sub-}"
+    id="${id#SUB-}"
+    id="${id#sub}"
+    id="${id#SUB}"
 
     # Remove leading underscores/hyphens
     id="${id#_}"
@@ -860,12 +866,14 @@ normalize_session_id() {
     local raw="$1"
     local id="$raw"
 
-    id="${id#ses-}"
-    id="${id#ses}"
-    id="${id#SES-}"
-    id="${id#SES}"
     id="${id#SESSION_}"
     id="${id#SESSION}"
+    id="${id#session_}"
+    id="${id#session}"
+    id="${id#ses-}"
+    id="${id#SES-}"
+    id="${id#ses}"
+    id="${id#SES}"
     id="${id#VISIT}"
     id="${id#TIMEPOINT}"
     id="${id#TP}"
@@ -1050,7 +1058,7 @@ fixup_run_numbers() {
                     fi
                 done
             fi
-            ((run_num++))
+            ((run_num++)) || true
         done
     done
 }
@@ -1295,7 +1303,7 @@ main() {
             process_subject "$sub_dir" "$sub_label" "$structure"
         fi
 
-        ((sub_count++))
+        ((sub_count++)) || true
         echo ""
     done
     shopt -u nullglob
