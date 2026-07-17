@@ -367,8 +367,11 @@ match_folder() {
     for i in "${!MAPPING_PATTERNS[@]}"; do
         local pattern_upper="${MAPPING_PATTERNS[$i]^^}"
 
-        # Use bash extended globbing for matching
-        # shellcheck disable=SC2254
+        # Intentionally unquoted: $pattern_upper holds a glob pattern (e.g.
+        # "SAG*T1*") that must expand for folder-to-modality matching to work
+        # at all — quoting it would make this a literal-string comparison and
+        # silently break every mapping rule. See README "Config file format".
+        # shellcheck disable=SC2053
         if [[ "$folder_upper" == $pattern_upper ]]; then
             MATCHED_MODALITY="${MAPPING_MODALITIES[$i]}"
             MATCHED_SUFFIX="${MAPPING_SUFFIXES[$i]}"
@@ -492,7 +495,7 @@ convert_folder() {
 
     # ── Handle multiple outputs (dcm2niix appends _a, _b, etc.) ──
     local nifti_count
-    nifti_count=$(ls "${output_dir}/${bids_filename}"*.nii.gz 2>/dev/null | wc -l)
+    nifti_count=$(find "$output_dir" -maxdepth 1 -type f -name "${bids_filename}*.nii.gz" 2>/dev/null | wc -l)
 
     if [ "$nifti_count" -eq 0 ]; then
         log_warn "  No NIfTI output produced for $source_dir"
@@ -502,7 +505,8 @@ convert_folder() {
         local run_num=1
         for nii_file in "${output_dir}/${bids_filename}"*.nii.gz; do
             local base="${nii_file%.nii.gz}"
-            local run_tag="_run-$(printf '%02d' $run_num)"
+            local run_tag
+            run_tag="_run-$(printf '%02d' "$run_num")"
             local suffix_part="${bids_filename##*_}"
             local prefix_part="${bids_filename%_*}"
             local new_name="${prefix_part}${run_tag}_${suffix_part}"
@@ -1046,7 +1050,8 @@ fixup_run_numbers() {
             if $DRY_RUN; then
                 log_dry "Would add run-$(printf '%02d' $run_num) to $(basename "$nii_file")"
             else
-                local run_tag="run-$(printf '%02d' $run_num)"
+                local run_tag
+                run_tag="run-$(printf '%02d' "$run_num")"
                 local new_pattern="${pattern%_${suffix}}_${run_tag}_${suffix}"
 
                 for ext in .nii.gz .json .bval .bvec; do
