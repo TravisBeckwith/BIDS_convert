@@ -95,9 +95,13 @@ test_dry_run_creates_no_files() {
     # then reports the pipeline as failed even though grep did match.
     local out
     out="$(bash "$SCRIPT" -i "$input_dir" -o "$output_dir" -n 2>&1)" || true
-    echo "$out" | grep -q "DRY-RUN" && \
-        echo "  ✅ PASS: dry-run mode activated" && { ((PASS++)) || true; } || \
-        { echo "  ❌ FAIL: dry-run mode not detected"; ((FAIL++)) || true; }
+    if echo "$out" | grep -q "DRY-RUN"; then
+        echo "  ✅ PASS: dry-run mode activated"
+        ((PASS++)) || true
+    else
+        echo "  ❌ FAIL: dry-run mode not detected"
+        ((FAIL++)) || true
+    fi
 
     teardown_tmp
 }

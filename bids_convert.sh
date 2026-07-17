@@ -1052,7 +1052,7 @@ fixup_run_numbers() {
             else
                 local run_tag
                 run_tag="run-$(printf '%02d' "$run_num")"
-                local new_pattern="${pattern%_${suffix}}_${run_tag}_${suffix}"
+                local new_pattern="${pattern%_"${suffix}"}_${run_tag}_${suffix}"
 
                 for ext in .nii.gz .json .bval .bvec; do
                     local old="${search_dir}/${pattern}${ext}"
